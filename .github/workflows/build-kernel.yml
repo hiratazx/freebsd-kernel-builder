@@ -1,4 +1,4 @@
-name: Build FreeBSD 15 Kernel
+name: Build FreeBSD 15 Kernel (Native)
 
 on:
   workflow_dispatch:
@@ -19,91 +19,65 @@ jobs:
       contents: write 
 
     steps:
-      - name: 🛠️ Install Toolchain & Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld git python3 make libncurses-dev bison flex libssl-dev pkg-config zlib1g-dev libzstd-dev libarchive-dev libbz2-dev liblzma-dev
-
-      - name: 🗄️ Cache FreeBSD Source
-        uses: actions/cache@v4
+      - name: 🚀 Build Kernel inside Native FreeBSD VM
+        uses: vmactions/freebsd-builder@v3
         with:
-          path: freebsd-src
-          key: freebsd-src-15.0-${{ github.run_id }}
-          restore-keys: |
-            freebsd-src-15.0-
-
-      - name: 📥 Fetch FreeBSD 15 Source
-        run: |
-          if [ -d "freebsd-src/.git" ]; then
-            echo "Source cache found! Pulling latest changes instead of re-cloning..."
-            cd freebsd-src
-            git pull --depth 1 origin releng/15.0
-          else
-            echo "No cache found. Cloning fresh source..."
-            git clone -b releng/15.0 --depth 1 https://git.freebsd.org/src.git freebsd-src
-          fi
-
-      - name: ⚙️ Generate Kernel Configuration
-        run: |
-          cd freebsd-src/sys/amd64/conf
-          
-          if [ "${{ github.event.inputs.kernel_type }}" == "qemu" ]; then
-            echo "Creating QEMU Micro configuration..."
-            echo "include MINIMAL" > CUSTOM_KERNEL
-            echo "ident QEMU_MICRO" >> CUSTOM_KERNEL
-            echo "device virtio" >> CUSTOM_KERNEL
-            echo "device virtio_pci" >> CUSTOM_KERNEL
-            echo "device vtnet" >> CUSTOM_KERNEL
-            echo "device vtblk" >> CUSTOM_KERNEL
-            echo "device virtio_scsi" >> CUSTOM_KERNEL
-            echo "device virtio_balloon" >> CUSTOM_KERNEL
-            echo "device virtio_random" >> CUSTOM_KERNEL
-            echo "device uart" >> CUSTOM_KERNEL
-          else
-            echo "Using default GENERIC configuration for normal hardware..."
-            cp GENERIC CUSTOM_KERNEL
-            sed -i 's/ident.*GENERIC/ident NORMAL_KERNEL/' CUSTOM_KERNEL
-          fi
-
-      - name: 🏗️ Build Kernel Toolchain
-        run: |
-          cd freebsd-src
-          mkdir -p ~/freebsd-obj
-          
-          export XCC=clang XCXX=clang++ XCPP="clang -E" XLD=ld.lld XAR=llvm-ar XNM=llvm-nm XOBJCOPY=llvm-objcopy XRANLIB=llvm-ranlib XSTRIP=llvm-strip
-          MAKEOBJDIRPREFIX=~/freebsd-obj ./tools/build/make.py --cross-bindir=/usr/bin -j$(nproc) TARGET=amd64 TARGET_ARCH=amd64 kernel-toolchain
-
-      - name: 🚀 Build Kernel
-        run: |
-          cd freebsd-src
-          
-          export XCC=clang XCXX=clang++ XCPP="clang -E" XLD=ld.lld XAR=llvm-ar XNM=llvm-nm XOBJCOPY=llvm-objcopy XRANLIB=llvm-ranlib XSTRIP=llvm-strip
-          MAKEOBJDIRPREFIX=~/freebsd-obj ./tools/build/make.py --cross-bindir=/usr/bin -j$(nproc) TARGET=amd64 TARGET_ARCH=amd64 buildkernel KERNCONF=CUSTOM_KERNEL
-
-      - name: 📦 Export and Compress Kernel
-        run: |
-          cd freebsd-src
-          mkdir -p ~/freebsd-kernel-out
-          
-          export XCC=clang XCXX=clang++ XCPP="clang -E" XLD=ld.lld XAR=llvm-ar XNM=llvm-nm XOBJCOPY=llvm-objcopy XRANLIB=llvm-ranlib XSTRIP=llvm-strip
-          MAKEOBJDIRPREFIX=~/freebsd-obj ./tools/build/make.py TARGET=amd64 TARGET_ARCH=amd64 installkernel KERNCONF=CUSTOM_KERNEL DESTDIR=~/freebsd-kernel-out
-          
-          cd ~/freebsd-kernel-out/boot
-          tar -czvf /tmp/freebsd-15-${{ github.event.inputs.kernel_type }}-kernel.tar.gz kernel/
+          usesh: true
+          # This entire block executes natively inside a FreeBSD 14/15 environment
+          run: |
+            pkg install -y git
+            
+            echo "===> Cloning Source..."
+            # Fetching releng/15.0 directly to the VM's /usr/src
+            git clone -b releng/15.0 --depth 1 https://git.freebsd.org/src.git /usr/src
+            
+            echo "===> Configuring Kernel..."
+            cd /usr/src/sys/amd64/conf
+            
+            if [ "${{ github.event.inputs.kernel_type }}" = "qemu" ]; then
+              echo "include MINIMAL" > CUSTOM_KERNEL
+              echo "ident QEMU_MICRO" >> CUSTOM_KERNEL
+              echo "device virtio" >> CUSTOM_KERNEL
+              echo "device virtio_pci" >> CUSTOM_KERNEL
+              echo "device vtnet" >> CUSTOM_KERNEL
+              echo "device vtblk" >> CUSTOM_KERNEL
+              echo "device virtio_scsi" >> CUSTOM_KERNEL
+              echo "device virtio_balloon" >> CUSTOM_KERNEL
+              echo "device virtio_random" >> CUSTOM_KERNEL
+              echo "device uart" >> CUSTOM_KERNEL
+            else
+              cp GENERIC CUSTOM_KERNEL
+              # FreeBSD's native sed requires an empty string argument for in-place edits without backups
+              sed -i '' 's/ident.*GENERIC/ident NORMAL_KERNEL/' CUSTOM_KERNEL
+            fi
+            
+            echo "===> Building Kernel (Skipping Toolchain!)..."
+            cd /usr/src
+            # Use native sysctl to dynamically grab the number of CPU cores allocated to the VM
+            make -j$(sysctl -n hw.ncpu) buildkernel KERNCONF=CUSTOM_KERNEL
+            
+            echo "===> Exporting Kernel..."
+            mkdir -p /tmp/kernel-out
+            make installkernel KERNCONF=CUSTOM_KERNEL DESTDIR=/tmp/kernel-out
+            
+            echo "===> Compressing..."
+            cd /tmp/kernel-out/boot
+            # The VM automatically syncs $GITHUB_WORKSPACE with the Ubuntu host runner
+            tar -czvf $GITHUB_WORKSPACE/freebsd-15-${{ github.event.inputs.kernel_type }}-kernel.tar.gz kernel/
 
       - name: 📝 Generate Changelog
         run: |
-          echo "## FreeBSD 15 Custom Kernel Build" > /tmp/release_notes.md
-          echo "" >> /tmp/release_notes.md
-          echo "Automated cross-compiled build from Ubuntu." >> /tmp/release_notes.md
-          echo "" >> /tmp/release_notes.md
-          echo "- **Kernel Type:** \`${{ github.event.inputs.kernel_type }}\`" >> /tmp/release_notes.md
-          echo "- **Branch:** \`releng/15.0\`" >> /tmp/release_notes.md
+          echo "## FreeBSD 15 Custom Kernel Build" > release_notes.md
+          echo "" >> release_notes.md
+          echo "Built natively using a FreeBSD GitHub Action runner, bypassing cross-compilation entirely." >> release_notes.md
+          echo "" >> release_notes.md
+          echo "- **Kernel Type:** \`${{ github.event.inputs.kernel_type }}\`" >> release_notes.md
+          echo "- **Branch:** \`releng/15.0\`" >> release_notes.md
 
       - name: 📤 Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: kernel-${{ github.event.inputs.kernel_type }}-${{ github.run_number }}
           name: FreeBSD 15 Kernel (${{ github.event.inputs.kernel_type }}) - Build ${{ github.run_number }}
-          body_path: /tmp/release_notes.md
-          files: /tmp/freebsd-15-${{ github.event.inputs.kernel_type }}-kernel.tar.gz
+          body_path: release_notes.md
+          files: freebsd-15-${{ github.event.inputs.kernel_type }}-kernel.tar.gz
