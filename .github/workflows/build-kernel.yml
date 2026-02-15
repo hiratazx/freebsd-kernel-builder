@@ -20,15 +20,14 @@ jobs:
 
     steps:
       - name: 🚀 Build Kernel inside Native FreeBSD VM
-        uses: vmactions/freebsd-builder@v3
+        uses: vmactions/freebsd-vm@v1
         with:
           usesh: true
-          # This entire block executes natively inside a FreeBSD 14/15 environment
+          release: "15.0"
           run: |
             pkg install -y git
             
             echo "===> Cloning Source..."
-            # Fetching releng/15.0 directly to the VM's /usr/src
             git clone -b releng/15.0 --depth 1 https://git.freebsd.org/src.git /usr/src
             
             echo "===> Configuring Kernel..."
@@ -47,13 +46,11 @@ jobs:
               echo "device uart" >> CUSTOM_KERNEL
             else
               cp GENERIC CUSTOM_KERNEL
-              # FreeBSD's native sed requires an empty string argument for in-place edits without backups
               sed -i '' 's/ident.*GENERIC/ident NORMAL_KERNEL/' CUSTOM_KERNEL
             fi
             
-            echo "===> Building Kernel (Skipping Toolchain!)..."
+            echo "===> Building Kernel (Native!)..."
             cd /usr/src
-            # Use native sysctl to dynamically grab the number of CPU cores allocated to the VM
             make -j$(sysctl -n hw.ncpu) buildkernel KERNCONF=CUSTOM_KERNEL
             
             echo "===> Exporting Kernel..."
@@ -62,7 +59,6 @@ jobs:
             
             echo "===> Compressing..."
             cd /tmp/kernel-out/boot
-            # The VM automatically syncs $GITHUB_WORKSPACE with the Ubuntu host runner
             tar -czvf $GITHUB_WORKSPACE/freebsd-15-${{ github.event.inputs.kernel_type }}-kernel.tar.gz kernel/
 
       - name: 📝 Generate Changelog
