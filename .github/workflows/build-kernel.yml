@@ -1,0 +1,99 @@
+name: Build FreeBSD 15 Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_type:
+        description: 'Target Environment'
+        required: true
+        default: 'qemu'
+        type: choice
+        options:
+          - qemu
+          - normal
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write 
+
+    steps:
+      - name: 🛠️ Install Toolchain & Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld git python3 make libncurses-dev bison flex libssl-dev pkg-config zlib1g-dev libzstd-dev
+
+      - name: 📥 Fetch FreeBSD 15 Source
+        run: |
+          git clone -b releng/15.0 --depth 1 https://git.freebsd.org/src.git freebsd-src
+
+      - name: ⚙️ Generate Kernel Configuration
+        run: |
+          cd freebsd-src/sys/amd64/conf
+          
+          if [ "${{ github.event.inputs.kernel_type }}" == "qemu" ]; then
+            echo "Creating QEMU Micro configuration..."
+            cat << 'EOF' > CUSTOM_KERNEL
+          include MINIMAL
+          ident QEMU_MICRO
+          device virtio
+          device virtio_pci
+          device vtnet
+          device vtblk
+          device virtio_scsi
+          device virtio_balloon
+          device virtio_random
+          device uart
+          EOF
+          else
+            echo "Using default GENERIC configuration for normal hardware..."
+            cp GENERIC CUSTOM_KERNEL
+            sed -i 's/ident.*GENERIC/ident NORMAL_KERNEL/' CUSTOM_KERNEL
+          fi
+
+      - name: 🏗️ Build Kernel Toolchain (Fixes 'config: not found')
+        run: |
+          cd freebsd-src
+          mkdir -p ~/freebsd-obj
+          
+          # Force the environment variables so Linux doesn't get confused by missing symlinks
+          export XCC=clang XCXX=clang++ XCPP="clang -E" XLD=ld.lld XAR=llvm-ar XNM=llvm-nm XOBJCOPY=llvm-objcopy XRANLIB=llvm-ranlib XSTRIP=llvm-strip
+          MAKEOBJDIRPREFIX=~/freebsd-obj ./tools/build/make.py --cross-bindir=/usr/bin -j$(nproc) TARGET=amd64 TARGET_ARCH=amd64 kernel-toolchain
+
+      - name: 🚀 Build Kernel
+        run: |
+          cd freebsd-src
+          
+          export XCC=clang XCXX=clang++ XCPP="clang -E" XLD=ld.lld XAR=llvm-ar XNM=llvm-nm XOBJCOPY=llvm-objcopy XRANLIB=llvm-ranlib XSTRIP=llvm-strip
+          MAKEOBJDIRPREFIX=~/freebsd-obj ./tools/build/make.py --cross-bindir=/usr/bin -j$(nproc) TARGET=amd64 TARGET_ARCH=amd64 buildkernel KERNCONF=CUSTOM_KERNEL
+
+      - name: 📦 Export and Compress Kernel
+        run: |
+          cd freebsd-src
+          mkdir -p ~/freebsd-kernel-out
+          
+          export XCC=clang XCXX=clang++ XCPP="clang -E" XLD=ld.lld XAR=llvm-ar XNM=llvm-nm XOBJCOPY=llvm-objcopy XRANLIB=llvm-ranlib XSTRIP=llvm-strip
+          MAKEOBJDIRPREFIX=~/freebsd-obj ./tools/build/make.py TARGET=amd64 TARGET_ARCH=amd64 installkernel KERNCONF=CUSTOM_KERNEL DESTDIR=~/freebsd-kernel-out
+          
+          cd ~/freebsd-kernel-out/boot
+          tar -czvf /tmp/freebsd-15-${{ github.event.inputs.kernel_type }}-kernel.tar.gz kernel/
+
+      - name: 📝 Generate Changelog
+        run: |
+          cat << EOF > /tmp/release_notes.md
+          ## FreeBSD 15 Custom Kernel Build
+          
+          Automated cross-compiled build from Ubuntu.
+          
+          - **Kernel Type:** \`${{ github.event.inputs.kernel_type }}\`
+          - **Branch:** \`releng/15.0\`
+          EOF
+
+      - name: 📤 Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kernel-${{ github.event.inputs.kernel_type }}-${{ github.run_number }}
+          name: FreeBSD 15 Kernel (${{ github.event.inputs.kernel_type }}) - Build ${{ github.run_number }}
+          body_path: /tmp/release_notes.md
+          files: /tmp/freebsd-15-${{ github.event.inputs.kernel_type }}-kernel.tar.gz
