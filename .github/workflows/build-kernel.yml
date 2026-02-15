@@ -22,7 +22,7 @@ jobs:
       - name: 🛠️ Install Toolchain & Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld git python3 make libncurses-dev bison flex libssl-dev pkg-config zlib1g-dev libzstd-dev
+          sudo apt-get install -y clang lld git python3 make libncurses-dev bison flex libssl-dev pkg-config zlib1g-dev libzstd-dev libarchive-dev libbz2-dev liblzma-dev
 
       - name: 🗄️ Cache FreeBSD Source
         uses: actions/cache@v4
