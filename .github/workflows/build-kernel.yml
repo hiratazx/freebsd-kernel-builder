@@ -39,7 +39,7 @@ jobs:
               echo "device virtio" >> CUSTOM_KERNEL
               echo "device virtio_pci" >> CUSTOM_KERNEL
               echo "device vtnet" >> CUSTOM_KERNEL
-              echo "device vtblk" >> CUSTOM_KERNEL
+              echo "device virtio_blk" >> CUSTOM_KERNEL
               echo "device virtio_scsi" >> CUSTOM_KERNEL
               echo "device virtio_balloon" >> CUSTOM_KERNEL
               echo "device virtio_random" >> CUSTOM_KERNEL
